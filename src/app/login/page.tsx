@@ -1,22 +1,25 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../contexts/AuthContext";
 
 export default function LoginPage() {
   const { login, signup, user } = useAuth();
   const router = useRouter();
+
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  if (user) {
-    // Already logged in
-    router.push("/dashboard");
-  }
+  // Redirect if already logged in
+  useEffect(() => {
+    if (user) {
+      router.push("/dashboard");
+    }
+  }, [user, router]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -28,7 +31,7 @@ export default function LoginPage() {
       } else {
         await login(email, password);
       }
-      router.push("/dashboard");
+      // no router.push here; the effect above will run when `user` changes
     } catch (err: any) {
       setError(err.message || "Something went wrong");
     } finally {
@@ -62,9 +65,7 @@ export default function LoginPage() {
         </div>
 
         {error && (
-          <p style={{ color: "red", marginTop: 8 }}>
-            {error}
-          </p>
+          <p style={{ color: "red", marginTop: 8 }}>{error}</p>
         )}
 
         <button

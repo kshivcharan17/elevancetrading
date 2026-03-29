@@ -77,3 +77,28 @@ export async function setIndicators(
   const ref = doc(db, "users", uid, "data", "indicators");
   await setDoc(ref, { items }, { merge: true });
 }
+
+// Multi‑asset chart configuration
+
+export type AssetChartConfig = {
+  id: string;
+  type: "line" | "bar" | "candlestick";
+  visible: boolean;
+};
+
+export async function getMultiAssetConfig(
+  uid: string
+): Promise<AssetChartConfig[] | null> {
+  const ref = doc(db, "users", uid, "data", "multiAssetChart");
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  return (snap.data().assets as AssetChartConfig[]) || null;
+}
+
+export async function setMultiAssetConfig(
+  uid: string,
+  assets: AssetChartConfig[]
+) {
+  const ref = doc(db, "users", uid, "data", "multiAssetChart");
+  await setDoc(ref, { assets }, { merge: true });
+}
