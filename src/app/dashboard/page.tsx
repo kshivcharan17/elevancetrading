@@ -80,7 +80,7 @@ function Header({ isDark }: { isDark: boolean }) {
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
         >
-          TradePro
+          ElevanceTrading
         </motion.span>
         <nav className="hidden md:block">
           <ul className="flex space-x-4">
@@ -422,7 +422,7 @@ export default function DashboardPage() {
               Welcome, {user.email}
             </h1>
             <p className={`${subText} text-sm`}>
-              Your personalized TradePro dashboard
+              Your personalized ElevanceTrading dashboard
             </p>
           </div>
           <div className="flex items-center gap-4">
