@@ -70,7 +70,6 @@ function Header({ isDark }: { isDark: boolean }) {
 
   const iconColor = isDark ? "text-gray-300" : "text-gray-600";
   const iconHover = isDark ? "hover:text-blue-500" : "hover:text-blue-600";
-
   const mobileMenuBg = isDark ? "bg-gray-800" : "bg-white";
 
   return (
@@ -160,7 +159,10 @@ function Header({ isDark }: { isDark: boolean }) {
 
       {/* Mobile header right */}
       <div className="md:hidden flex items-center gap-3">
-        <button className="text-sm text-blue-400" onClick={() => router.push("/dashboard")}>
+        <button
+          className="text-sm text-blue-400"
+          onClick={() => router.push("/dashboard")}
+        >
           Dashboard
         </button>
         <motion.button
@@ -565,8 +567,8 @@ export default function DashboardPage() {
   /* ---------- theme-dependent classes ---------- */
 
   const appBg = isDark
-    ? "bg-gray-900 min-h-screen text-gray-300"
-    : "bg-gray-100 min-h-screen text-gray-900";
+    ? "bg-gray-900 min-h-screen text-gray-300 overflow-x-hidden"
+    : "bg-gray-100 min-h-screen text-gray-900 overflow-x-hidden";
 
   const cardBg = isDark ? "bg-gray-800" : "bg-white";
   const cardInnerBg = isDark ? "bg-gray-900" : "bg-gray-100";
@@ -678,7 +680,7 @@ export default function DashboardPage() {
                   order panel or explore sections.
                 </p>
               ) : (
-                <div className="grid grid-cols-1 xs:grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {watchlist.map((sym) => (
                     <WatchlistCard
                       key={sym}
@@ -910,7 +912,7 @@ export default function DashboardPage() {
               )}
             </motion.div>
 
-            {/* Indicators (controls analytics dashboard) */}
+            {/* Indicators */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
