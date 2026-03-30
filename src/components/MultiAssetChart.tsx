@@ -12,6 +12,7 @@ import {
   Legend,
   ResponsiveContainer,
   Layer,
+  Customized,
 } from "recharts";
 import {
   getMultiAssetConfig,
@@ -122,14 +123,148 @@ function CandleShape(props: CandleProps) {
   );
 }
 
+/* ---------- Pattern detection types/helpers ---------- */
+
+type PatternType = "hammer" | "doji" | "bullish_engulfing";
+
+type PatternHit = {
+  index: number; // index in data[]
+  assetId: string; // "BTC"
+  type: PatternType;
+};
+
+function isDoji(candle: any): boolean {
+  const { open, close, high, low } = candle;
+  const range = high - low;
+  if (range === 0) return false;
+  const body = Math.abs(close - open);
+  return body <= range * 0.1;
+}
+
+function isHammer(candle: any): boolean {
+  const { open, close, high, low } = candle;
+  const body = Math.abs(close - open);
+  const range = high - low;
+  if (range === 0) return false;
+
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+
+  const bodyRatio = body / range;
+  return (
+    bodyRatio <= 0.3 &&
+    lowerWick >= body * 2 &&
+    upperWick <= body
+  );
+}
+
+function isBullishEngulfing(prev: any, curr: any): boolean {
+  const { open: o1, close: c1 } = prev;
+  const { open: o2, close: c2 } = curr;
+  if (!(c1 < o1 && c2 > o2)) return false;
+  return o2 < c1 && c2 > o1;
+}
+
+/* ---------- Indicators & strategy types ---------- */
+
+type IndicatorValues = {
+  sma20?: number;
+  rsi14?: number;
+};
+
+type IndicatorState = Record<string, IndicatorValues>;
+
+type StrategyRuleType = "price_cross_sma20_up" | "rsi_overbought";
+
+type StrategyRule = {
+  assetId: string;
+  type: StrategyRuleType;
+  enabled: boolean;
+  size: number; // quantity per trade
+};
+
+export type StrategySignal = {
+  assetId: string;
+  side: "BUY" | "SELL";
+  ruleType: StrategyRuleType;
+  price: number;
+  time: string;
+};
+
+/* ---------- Indicator helpers ---------- */
+function calcSMA(values: number[], period: number): (number | undefined)[] {
+  const res: (number | undefined)[] = new Array(values.length).fill(undefined);
+  if (values.length < period) return res;
+
+  let sum = 0;
+
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) {
+      sum -= values[i - period];
+    }
+    if (i >= period - 1) {
+      res[i] = sum / period;
+    }
+  }
+
+  return res;
+}
+
+// Wilder's RSI(14) approximation
+function calcRSI(values: number[], period = 14): (number | undefined)[] {
+  const res: (number | undefined)[] = new Array(values.length).fill(undefined);
+  if (values.length < period + 1) return res;
+
+  let gainSum = 0;
+  let lossSum = 0;
+
+  // First average gain/loss over initial period
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+    gainSum += gain;
+    lossSum += loss;
+  }
+
+  let avgGain = gainSum / period;
+  let avgLoss = lossSum / period;
+
+  // First RSI at index `period`
+  {
+    const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+    const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
+    res[period] = rsi;
+  }
+
+  // Subsequent RSIs
+  for (let i = period + 1; i < values.length; i++) {
+    const change = values[i] - values[i - 1];
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+
+    const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+    const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
+    res[i] = rsi;
+  }
+
+  return res;
+}
+
 /* ---------- Component ---------- */
 
 export default function MultiAssetChart({
   isDark,
   uid,
+  onStrategySignal,
 }: {
   isDark: boolean;
   uid: string;
+  onStrategySignal?: (signal: StrategySignal) => void;
 }) {
   const [assets, setAssets] = useState<AssetConfig[]>(ASSETS_INITIAL);
   const [data, setData] = useState<DataPoint[]>([]);
@@ -139,8 +274,40 @@ export default function MultiAssetChart({
     BTC: 50000,
   });
 
-  // NEW: tracks whether we've finished loading config from Firestore
   const [loaded, setLoaded] = useState(false);
+
+  const [patterns, setPatterns] = useState<PatternHit[]>([]);
+  const [patternFilter, setPatternFilter] = useState<{
+    hammer: boolean;
+    doji: boolean;
+    bullish_engulfing: boolean;
+  }>({
+    hammer: true,
+    doji: true,
+    bullish_engulfing: true,
+  });
+
+  const [indicators, setIndicators] = useState<IndicatorState>({});
+  const [prevCrossState, setPrevCrossState] = useState<
+    Record<string, boolean | undefined>
+  >({});
+
+  // simple default rules for all assets
+  const defaultRules: StrategyRule[] = ASSETS_INITIAL.flatMap((a) => [
+    {
+      assetId: a.id,
+      type: "price_cross_sma20_up",
+      enabled: true,
+      size: 1,
+    },
+    {
+      assetId: a.id,
+      type: "rsi_overbought",
+      enabled: true,
+      size: 1,
+    },
+  ]);
+  const [strategyRules] = useState<StrategyRule[]>(defaultRules);
 
   // load saved asset config from Firestore
   useEffect(() => {
@@ -148,7 +315,6 @@ export default function MultiAssetChart({
     (async () => {
       try {
         const saved = await getMultiAssetConfig(uid);
-        console.log("Loaded multiAsset config:", saved);
         if (saved && saved.length) {
           setAssets((current) =>
             current.map((a) => {
@@ -162,12 +328,12 @@ export default function MultiAssetChart({
       } catch (e) {
         console.error("Failed to load multiAsset config", e);
       } finally {
-        setLoaded(true); // mark load as done (even if nothing saved yet)
+        setLoaded(true);
       }
     })();
   }, [uid]);
 
-  // init + live updates for data (independent of assets config)
+  // init + live updates for data
   useEffect(() => {
     let current = { ...lastValues };
 
@@ -227,8 +393,130 @@ export default function MultiAssetChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // persist asset config when it changes,
-  // BUT ONLY AFTER initial load is complete
+  // detect patterns for BTC
+  useEffect(() => {
+    const hits: PatternHit[] = [];
+    for (let i = 0; i < data.length; i++) {
+      const dp = data[i];
+      const candle = dp["BTC"];
+      if (!candle || typeof candle !== "object") continue;
+
+      if (isDoji(candle)) {
+        hits.push({ index: i, assetId: "BTC", type: "doji" });
+      } else if (isHammer(candle)) {
+        hits.push({ index: i, assetId: "BTC", type: "hammer" });
+      }
+
+      if (i > 0) {
+        const prev = data[i - 1]["BTC"];
+        if (prev && isBullishEngulfing(prev, candle)) {
+          hits.push({
+            index: i,
+            assetId: "BTC",
+            type: "bullish_engulfing",
+          });
+        }
+      }
+    }
+    setPatterns(hits);
+  }, [data]);
+
+  // compute indicators (SMA20, RSI14) for all assets and fire strategy
+  useEffect(() => {
+    const newIndicators: IndicatorState = {};
+
+    for (const asset of ASSETS_INITIAL) {
+      const closes = data.map((dp) => {
+        const v = dp[asset.id];
+        if (!v) return undefined;
+        if (typeof v === "number") return v;
+        if (typeof v === "object" && "close" in v) return v.close as number;
+        return undefined;
+      });
+
+      const numericCloses = closes.map((v) => v ?? 0);
+      const smaArr = calcSMA(numericCloses, 20);
+      const rsiArr = calcRSI(numericCloses, 14);
+
+      const lastIdx = data.length - 1;
+      if (lastIdx >= 0) {
+        newIndicators[asset.id] = {
+          sma20: smaArr[lastIdx],
+          rsi14: rsiArr[lastIdx],
+        };
+      }
+    }
+
+    setIndicators(newIndicators);
+
+    // strategy evaluation for latest candle
+    const lastIndex = data.length - 1;
+    if (lastIndex < 1) return;
+
+    const latestDp = data[lastIndex];
+    const prevDp = data[lastIndex - 1];
+
+    const nextCrossState: typeof prevCrossState = { ...prevCrossState };
+
+    for (const rule of strategyRules) {
+      if (!rule.enabled) continue;
+      const id = rule.assetId;
+
+      const latestVal = latestDp[id];
+      const prevVal = prevDp[id];
+      if (!latestVal || !prevVal) continue;
+
+      const close = typeof latestVal === "object" ? latestVal.close : latestVal;
+      const prevClose =
+        typeof prevVal === "object" ? prevVal.close : prevVal;
+
+      const ind = newIndicators[id];
+      if (!ind) continue;
+
+      // price_cross_sma20_up
+      if (rule.type === "price_cross_sma20_up" && ind.sma20 != null) {
+        const currAbove = close > ind.sma20;
+        const prevAbove = prevCrossState[id];
+        if (prevAbove === false && currAbove === true) {
+          // crossing upwards now
+          if (onStrategySignal) {
+            onStrategySignal({
+              assetId: id,
+              side: "BUY",
+              ruleType: rule.type,
+              price: close,
+              time: latestDp.time,
+            });
+          }
+        }
+        nextCrossState[id] = currAbove;
+      }
+
+      // rsi_overbought
+      if (rule.type === "rsi_overbought" && ind.rsi14 != null) {
+        if (ind.rsi14 > 70) {
+          if (onStrategySignal) {
+            onStrategySignal({
+              assetId: id,
+              side: "SELL",
+              ruleType: rule.type,
+              price: close,
+              time: latestDp.time,
+            });
+          }
+        }
+      }
+
+      // prevClose used so TS doesn't complain it's unused, and you
+      // can extend logic later if needed
+      void prevClose;
+    }
+
+    setPrevCrossState(nextCrossState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  // persist asset config when it changes, after initial load
   useEffect(() => {
     if (!uid || !loaded) return;
     const config: AssetChartConfig[] = assets.map((a) => ({
@@ -236,7 +524,6 @@ export default function MultiAssetChart({
       type: a.type,
       visible: a.visible,
     }));
-    console.log("Saving multiAsset config:", config);
     setMultiAssetConfig(uid, config).catch((e) =>
       console.error("Failed to save multiAsset config", e)
     );
@@ -254,6 +541,13 @@ export default function MultiAssetChart({
     setAssets((prev) =>
       prev.map((a) => (a.id === id ? { ...a, type } : a))
     );
+  };
+
+  const handlePatternFilterChange = (key: PatternType) => {
+    setPatternFilter((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
   };
 
   // styling based on theme
@@ -279,14 +573,57 @@ export default function MultiAssetChart({
     return undefined;
   };
 
-  const flatDataForYAxis = data.map((dp) => {
-    const out: any = { time: dp.time };
+  const flatDataForYAxis = data.map((dp, index) => {
+    const out: any = { time: dp.time, index };
     for (const a of assets) {
       const v = valueAccessor(a.id, dp);
       if (v != null) out[a.id] = v;
     }
     return out;
   });
+
+  // pattern markers renderer
+  const renderPatternMarkers = (props: any) => {
+    const { xAxisMap, yAxisMap } = props;
+    if (!xAxisMap || !yAxisMap) return null;
+
+    const activePatterns = patterns.filter((p) => {
+      if (p.type === "hammer" && !patternFilter.hammer) return false;
+      if (p.type === "doji" && !patternFilter.doji) return false;
+      if (
+        p.type === "bullish_engulfing" &&
+        !patternFilter.bullish_engulfing
+      )
+        return false;
+      return true;
+    });
+
+    const xScale = xAxisMap[Object.keys(xAxisMap)[0]].scale;
+    const yScale = yAxisMap[Object.keys(yAxisMap)[0]].scale;
+
+    return (
+      <Layer>
+        {activePatterns.map((p, idx) => {
+          const dp = flatDataForYAxis[p.index];
+          if (!dp) return null;
+          const x = xScale(dp.time);
+          const price = dp["BTC"];
+          if (price == null) return null;
+          const y = yScale(price);
+
+          let color = "#A855F7"; // purple for doji
+          if (p.type === "hammer") color = "#22C55E"; // green
+          if (p.type === "bullish_engulfing") color = "#F97316"; // orange
+
+          return (
+            <g key={`${p.type}-${p.index}-${idx}`}>
+              <circle cx={x} cy={y + 14} r={4} fill={color} />
+            </g>
+          );
+        })}
+      </Layer>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -295,7 +632,8 @@ export default function MultiAssetChart({
         <h2 className={`text-lg font-semibold ${titleText}`}>
           Multi‑Asset Chart (Random Data)
         </h2>
-        <div className="flex flex-wrap gap-3 text-xs">
+        <div className="flex flex-wrap gap-3 text-xs items-center">
+          {/* asset toggles */}
           {assets.map((asset) => (
             <div
               key={asset.id}
@@ -324,6 +662,36 @@ export default function MultiAssetChart({
               </select>
             </div>
           ))}
+
+          {/* pattern filters */}
+          <div className="flex flex-wrap gap-2 ml-4">
+            <label className="flex items-center gap-1 text-[11px]">
+              <input
+                type="checkbox"
+                checked={patternFilter.hammer}
+                onChange={() => handlePatternFilterChange("hammer")}
+              />
+              <span className="text-green-400">Hammer</span>
+            </label>
+            <label className="flex items-center gap-1 text-[11px]">
+              <input
+                type="checkbox"
+                checked={patternFilter.doji}
+                onChange={() => handlePatternFilterChange("doji")}
+              />
+              <span className="text-purple-400">Doji</span>
+            </label>
+            <label className="flex items-center gap-1 text-[11px]">
+              <input
+                type="checkbox"
+                checked={patternFilter.bullish_engulfing}
+                onChange={() =>
+                  handlePatternFilterChange("bullish_engulfing")
+                }
+              />
+              <span className="text-orange-400">Engulfing</span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -344,6 +712,12 @@ export default function MultiAssetChart({
                 borderRadius: "0.5rem",
                 color: tooltipText,
               }}
+              labelStyle={{
+                color: tooltipText,
+              }}
+              itemStyle={{
+                color: tooltipText,
+              }}
               formatter={(value: any, name, props: any) => {
                 const idx = props?.payload?.index;
                 const dataKey: string = props?.dataKey || name;
@@ -358,10 +732,27 @@ export default function MultiAssetChart({
                 const v = original[dataKey];
 
                 if (v && typeof v === "object" && "open" in v) {
+                  const hitsHere = patterns.filter(
+                    (p) => p.assetId === dataKey && p.index === idx
+                  );
+                  const patternText =
+                    hitsHere.length > 0
+                      ? " | " +
+                        hitsHere
+                          .map((p) => {
+                            if (p.type === "hammer") return "Hammer";
+                            if (p.type === "doji") return "Doji";
+                            if (p.type === "bullish_engulfing")
+                              return "Bullish Engulfing";
+                            return p.type;
+                          })
+                          .join(", ")
+                      : "";
+
                   return [
                     `O:${v.open.toFixed(2)} H:${v.high.toFixed(
                       2
-                    )} L:${v.low.toFixed(2)} C:${v.close.toFixed(2)}`,
+                    )} L:${v.low.toFixed(2)} C:${v.close.toFixed(2)}${patternText}`,
                     dataKey,
                   ];
                 }
@@ -371,7 +762,12 @@ export default function MultiAssetChart({
                 return [isNaN(num) ? value : num.toFixed(2), dataKey];
               }}
             />
-            <Legend />
+            <Legend
+              wrapperStyle={{
+                color: tooltipText,
+                fontSize: 11,
+              }}
+            />
 
             {assets
               .filter((a) => a.visible)
@@ -414,14 +810,19 @@ export default function MultiAssetChart({
                   />
                 );
               })}
+
+            {/* pattern markers for BTC */}
+            <Customized component={renderPatternMarkers} />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
       <p className="text-[11px] text-gray-500">
-        Candles are simulated OHLC data (open, high, low, close) for demo
-        purposes. Toggle assets and change chart types to explore multi‑asset
-        comparisons.
+        Candles are simulated OHLC data (open, high, low, close). Detected
+        patterns (Hammer, Doji, Bullish Engulfing) are highlighted for BTC and
+        update as new candles form. Simple strategies (price crossing SMA20 &
+        RSI overbought) are evaluated for all assets, emitting signals back to
+        the dashboard.
       </p>
     </div>
   );

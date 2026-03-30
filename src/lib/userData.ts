@@ -2,7 +2,7 @@
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "./firebase";
 
-export type Watchlist = string[]; 
+export type Watchlist = string[];
 
 export async function getWatchlist(uid: string): Promise<Watchlist> {
   const ref = doc(db, "users", uid, "data", "watchlist");
@@ -39,6 +39,7 @@ export type Holding = {
   symbol: string;
   quantity: number;
   avgPrice: number;
+  realizedPnl?: number;
 };
 
 export type Portfolio = Holding[];
@@ -101,4 +102,29 @@ export async function setMultiAssetConfig(
 ) {
   const ref = doc(db, "users", uid, "data", "multiAssetChart");
   await setDoc(ref, { assets }, { merge: true });
+}
+
+export type TradeSide = "BUY" | "SELL";
+
+export type Trade = {
+  id: string;
+  symbol: string;
+  side: TradeSide;
+  quantity: number;
+  price: number;
+  fee: number;
+  realizedPnl: number;
+  timestamp: number;
+};
+
+export async function getTrades(uid: string): Promise<Trade[]> {
+  const ref = doc(db, "users", uid, "data", "trades");
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return [];
+  return (snap.data().items as Trade[]) || [];
+}
+
+export async function setTrades(uid: string, trades: Trade[]) {
+  const ref = doc(db, "users", uid, "data", "trades");
+  await setDoc(ref, { items: trades }, { merge: true });
 }

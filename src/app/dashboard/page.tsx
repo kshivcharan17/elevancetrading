@@ -9,6 +9,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../contexts/AuthContext";
 import MultiAssetChart from "../../components/MultiAssetChart";
+import type { StrategySignal } from "../../components/MultiAssetChart";
 import {
   getWatchlist,
   setWatchlist,
@@ -23,6 +24,9 @@ import {
   Portfolio,
   Holding,
   IndicatorsState,
+  Trade,
+  getTrades,
+  setTrades,
 } from "../../lib/userData";
 
 import { motion, AnimatePresence } from "framer-motion";
@@ -267,6 +271,20 @@ export default function DashboardPage() {
   const [indicators, setIndicatorsState] = useState<IndicatorsState>([]);
   const [loadingData, setLoadingData] = useState(true);
 
+  // simulated market prices
+  const [prices, setPrices] = useState<Record<string, number>>({
+    AAPL: 180,
+    BND: 100,
+    BTC: 50000,
+    RELIANCE: 2500,
+    TCS: 3500,
+    HDFCBANK: 1600,
+    INFY: 1500,
+  });
+
+  // trade history
+  const [trades, setTradesState] = useState<Trade[]>([]);
+
   // redirect if not logged in
   useEffect(() => {
     if (!authLoading && !user) {
@@ -274,16 +292,35 @@ export default function DashboardPage() {
     }
   }, [authLoading, user, router]);
 
+  // simulate market prices
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPrices((prev) => {
+        const next: Record<string, number> = {};
+        for (const sym of Object.keys(prev)) {
+          const prevPrice = prev[sym];
+          const change = (Math.random() * 2 - 1) * (prevPrice * 0.003); // ±0.3%
+          next[sym] = Math.max(1, prevPrice + change);
+        }
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
   // load all user-specific data
   useEffect(() => {
     if (!user) return;
     const loadAll = async () => {
-      const [wl, prefs, pf, inds] = await Promise.all([
+      const [wl, prefs, pf, inds, tr] = await Promise.all([
         getWatchlist(user.uid),
         getPreferences(user.uid),
         getPortfolio(user.uid),
         getIndicators(user.uid),
+        getTrades(user.uid),
       ]);
+
       setWatchlistState(wl);
       setPreferencesState(prefs);
       setPortfolioState(pf);
@@ -295,8 +332,10 @@ export default function DashboardPage() {
               { id: "macd", enabled: false },
             ]
       );
+      setTradesState(tr);
       setLoadingData(false);
     };
+
     loadAll();
   }, [user]);
 
@@ -321,6 +360,16 @@ export default function DashboardPage() {
       await setPreferences(user.uid, updated);
     };
 
+  const handleStrategySignal = async (signal: StrategySignal) => {
+    const price = prices[signal.assetId] ?? signal.price;
+    await handleOrder({
+      side: signal.side,
+      symbol: signal.assetId,
+      price,
+      quantity: 1, // could be rule.size in the future
+    });
+  };
+
   /* ---------- Watchlist handlers ---------- */
 
   const handleToggleWatchlist = async (symbol: string) => {
@@ -335,7 +384,7 @@ export default function DashboardPage() {
     await setWatchlist(user.uid, updated);
   };
 
-  /* ---------- Portfolio handlers ---------- */
+  /* ---------- Portfolio order handler (simulation) ---------- */
 
   const handleOrder = async (order: {
     side: "BUY" | "SELL";
@@ -344,46 +393,106 @@ export default function DashboardPage() {
     quantity: number;
   }) => {
     const sym = order.symbol.toUpperCase();
-    let updated = [...portfolio];
-    const existing = updated.find((h) => h.symbol === sym);
+    const notional = order.price * order.quantity;
+    const feeRate = 0.001; // 0.1%
+    const fee = notional * feeRate;
+
+    let updatedHoldings = [...portfolio];
+    let updatedTrades = [...trades];
+    const existing = updatedHoldings.find((h) => h.symbol === sym);
 
     if (order.side === "BUY") {
       if (existing) {
         const totalQty = existing.quantity + order.quantity;
         const totalCost =
           existing.avgPrice * existing.quantity +
-          order.price * order.quantity;
+          order.price * order.quantity +
+          fee; // fee increases cost basis
+
         const newAvg = totalCost / totalQty;
-        updated = updated.map((h) =>
+
+        updatedHoldings = updatedHoldings.map((h) =>
           h.symbol === sym
-            ? { ...h, quantity: totalQty, avgPrice: newAvg }
+            ? {
+                ...h,
+                quantity: totalQty,
+                avgPrice: newAvg,
+                realizedPnl: h.realizedPnl ?? 0,
+              }
             : h
         );
       } else {
-        updated.push({
+        updatedHoldings.push({
           id: Date.now().toString(),
           symbol: sym,
           quantity: order.quantity,
-          avgPrice: order.price,
+          avgPrice: order.price + fee / order.quantity, // spread fee into avgPrice
+          realizedPnl: 0,
         });
       }
+
+      updatedTrades.unshift({
+        id: `${Date.now()}-${Math.random()}`,
+        symbol: sym,
+        side: "BUY",
+        quantity: order.quantity,
+        price: order.price,
+        fee,
+        realizedPnl: 0,
+        timestamp: Date.now(),
+      });
     } else {
+      // SELL
       if (!existing || existing.quantity < order.quantity) {
         alert("Not enough quantity to sell");
         return;
       }
-      const remaining = existing.quantity - order.quantity;
-      if (remaining === 0) {
-        updated = updated.filter((h) => h.symbol !== sym);
+
+      const sellQty = order.quantity;
+      const remainingQty = existing.quantity - sellQty;
+
+      const grossRealized =
+        (order.price - existing.avgPrice) * sellQty;
+      const realizedAfterFee = grossRealized - fee;
+
+      const updatedRealized =
+        (existing.realizedPnl ?? 0) + realizedAfterFee;
+
+      if (remainingQty === 0) {
+        updatedHoldings = updatedHoldings.filter(
+          (h) => h.symbol !== sym
+        );
       } else {
-        updated = updated.map((h) =>
-          h.symbol === sym ? { ...h, quantity: remaining } : h
+        updatedHoldings = updatedHoldings.map((h) =>
+          h.symbol === sym
+            ? {
+                ...h,
+                quantity: remainingQty,
+                realizedPnl: updatedRealized,
+              }
+            : h
         );
       }
+
+      updatedTrades.unshift({
+        id: `${Date.now()}-${Math.random()}`,
+        symbol: sym,
+        side: "SELL",
+        quantity: sellQty,
+        price: order.price,
+        fee,
+        realizedPnl: realizedAfterFee,
+        timestamp: Date.now(),
+      });
     }
 
-    setPortfolioState(updated);
-    await setPortfolio(user.uid, updated);
+    setPortfolioState(updatedHoldings);
+    setTradesState(updatedTrades);
+
+    await Promise.all([
+      setPortfolio(user.uid, updatedHoldings),
+      setTrades(user.uid, updatedTrades),
+    ]);
   };
 
   /* ---------- Indicators handlers ---------- */
@@ -395,6 +504,46 @@ export default function DashboardPage() {
     setIndicatorsState(updated);
     await setIndicators(user.uid, updated);
   };
+
+  /* ---------- Derived portfolio metrics ---------- */
+
+  const holdingsWithMetrics = portfolio.map((h) => {
+    const price = prices[h.symbol] ?? h.avgPrice;
+    const currentValue = price * h.quantity;
+    const costBasis = h.avgPrice * h.quantity;
+    const unrealized = currentValue - costBasis;
+    const realized = h.realizedPnl ?? 0;
+    return {
+      ...h,
+      price,
+      currentValue,
+      costBasis,
+      unrealized,
+      realized,
+    };
+  });
+
+  const totalValue = holdingsWithMetrics.reduce(
+    (sum, h) => sum + h.currentValue,
+    0
+  );
+  const totalCost = holdingsWithMetrics.reduce(
+    (sum, h) => sum + h.costBasis,
+    0
+  );
+  const totalUnrealized = holdingsWithMetrics.reduce(
+    (sum, h) => sum + h.unrealized,
+    0
+  );
+  const totalRealized = holdingsWithMetrics.reduce(
+    (sum, h) => sum + h.realized,
+    0
+  );
+
+  const allocation = holdingsWithMetrics.map((h) => ({
+    symbol: h.symbol,
+    weight: totalValue > 0 ? (h.currentValue / totalValue) * 100 : 0,
+  }));
 
   /* ---------- theme-dependent classes ---------- */
 
@@ -471,15 +620,21 @@ export default function DashboardPage() {
             </button>
           </div>
         </motion.section>
-        <section className={`${cardBg} rounded-lg p-4 shadow-md`}
-        >
-          <MultiAssetChart isDark={isDark} uid={user.uid}/>
+
+        {/* Multi-asset chart */}
+        <section className={`${cardBg} rounded-lg p-4 shadow-md`}>
+          <MultiAssetChart
+            isDark={isDark}
+            uid={user.uid}
+            onStrategySignal={handleStrategySignal}
+          />
         </section>
 
         {/* Main grid */}
         <section className="grid lg:grid-cols-3 gap-6">
           {/* LEFT */}
           <div className="lg:col-span-2 space-y-6">
+            {/* Watchlist */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-4 shadow-md`}
@@ -512,6 +667,7 @@ export default function DashboardPage() {
               )}
             </motion.div>
 
+            {/* Top by market cap */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-4 shadow-md`}
@@ -542,10 +698,93 @@ export default function DashboardPage() {
                 ))}
               </div>
             </motion.div>
+
+            {/* Asset Allocation */}
+            <motion.div
+              {...fadeInUp}
+              className={`${cardBg} rounded-lg p-4 shadow-md`}
+            >
+              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+                Asset Allocation
+              </h2>
+              {allocation.length === 0 ? (
+                <p className={`${subText} text-sm`}>
+                  No holdings yet. Allocation will appear once you buy assets.
+                </p>
+              ) : (
+                <div className="space-y-2 text-sm">
+                  {allocation.map((a) => (
+                    <div key={a.symbol}>
+                      <div className="flex justify-between mb-1">
+                        <span className={headingText}>{a.symbol}</span>
+                        <span className={subText}>
+                          {a.weight.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-700 rounded h-2 overflow-hidden">
+                        <div
+                          className="h-2 bg-blue-500"
+                          style={{ width: `${a.weight}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
           </div>
 
           {/* RIGHT */}
           <div className="space-y-6">
+            {/* Portfolio Summary */}
+            <motion.div
+              {...fadeInUp}
+              className={`${cardBg} rounded-lg p-4 shadow-md`}
+            >
+              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+                Portfolio Summary
+              </h2>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span className={subText}>Total Value</span>
+                  <span className={headingText}>
+                    ₹{totalValue.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={subText}>Total Cost</span>
+                  <span className={headingText}>
+                    ₹{totalCost.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={subText}>Unrealized P/L</span>
+                  <span
+                    className={
+                      totalUnrealized >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }
+                  >
+                    ₹{totalUnrealized.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={subText}>Realized P/L</span>
+                  <span
+                    className={
+                      totalRealized >= 0
+                        ? "text-green-500"
+                        : "text-red-500"
+                    }
+                  >
+                    ₹{totalRealized.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </motion.div>
+
+            {/* Place Order */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-4 shadow-md`}
@@ -562,6 +801,7 @@ export default function DashboardPage() {
               />
             </motion.div>
 
+            {/* Holdings */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-4 shadow-md`}
@@ -569,7 +809,7 @@ export default function DashboardPage() {
               <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
                 Your Holdings
               </h2>
-              {portfolio.length === 0 ? (
+              {holdingsWithMetrics.length === 0 ? (
                 <p className={`${subText} text-sm`}>
                   No holdings yet. Place a buy order to get started.
                 </p>
@@ -587,10 +827,14 @@ export default function DashboardPage() {
                         <th className="text-left py-2">Symbol</th>
                         <th className="text-right py-2">Qty</th>
                         <th className="text-right py-2">Avg Price</th>
+                        <th className="text-right py-2">Price</th>
+                        <th className="text-right py-2">Value</th>
+                        <th className="text-right py-2">Unrealized P/L</th>
+                        <th className="text-right py-2">Realized P/L</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {portfolio.map((h) => (
+                      {holdingsWithMetrics.map((h) => (
                         <tr
                           key={h.id}
                           className={
@@ -604,6 +848,34 @@ export default function DashboardPage() {
                           <td className="py-2 text-right">
                             ₹{h.avgPrice.toFixed(2)}
                           </td>
+                          <td className="py-2 text-right">
+                            ₹{h.price.toFixed(2)}
+                          </td>
+                          <td className="py-2 text-right">
+                            ₹{h.currentValue.toFixed(2)}
+                          </td>
+                          <td className="py-2 text-right">
+                            <span
+                              className={
+                                h.unrealized >= 0
+                                  ? "text-green-500"
+                                  : "text-red-500"
+                              }
+                            >
+                              ₹{h.unrealized.toFixed(2)}
+                            </span>
+                          </td>
+                          <td className="py-2 text-right">
+                            <span
+                              className={
+                                h.realized >= 0
+                                  ? "text-green-500"
+                                  : "text-red-500"
+                              }
+                            >
+                              ₹{h.realized.toFixed(2)}
+                            </span>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -612,6 +884,7 @@ export default function DashboardPage() {
               )}
             </motion.div>
 
+            {/* Indicators */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-4 shadow-md`}
@@ -644,6 +917,82 @@ export default function DashboardPage() {
               <p className="text-[10px] text-gray-500 mt-2">
                 Later you&apos;ll hook this to your actual charting library.
               </p>
+            </motion.div>
+
+            {/* Trade History */}
+            <motion.div
+              {...fadeInUp}
+              className={`${cardBg} rounded-lg p-4 shadow-md`}
+            >
+              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+                Trade History
+              </h2>
+              {trades.length === 0 ? (
+                <p className={`${subText} text-sm`}>
+                  No trades yet. Place buy/sell orders to build history.
+                </p>
+              ) : (
+                <div className="max-h-64 overflow-y-auto text-xs">
+                  <table className="w-full">
+                    <thead>
+                      <tr
+                        className={
+                          isDark
+                            ? "text-gray-400 border-b border-gray-700"
+                            : "text-gray-500 border-b border-gray-200"
+                        }
+                      >
+                        <th className="text-left py-1">Time</th>
+                        <th className="text-left py-1">Symbol</th>
+                        <th className="text-left py-1">Side</th>
+                        <th className="text-right py-1">Qty</th>
+                        <th className="text-right py-1">Price</th>
+                        <th className="text-right py-1">Fee</th>
+                        <th className="text-right py-1">Realized P/L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trades.map((t) => (
+                        <tr key={t.id}>
+                          <td className="py-1">
+                            {new Date(t.timestamp).toLocaleTimeString()}
+                          </td>
+                          <td className="py-1">{t.symbol}</td>
+                          <td
+                            className={
+                              t.side === "BUY"
+                                ? "text-green-500"
+                                : "text-red-500"
+                            }
+                          >
+                            {t.side}
+                          </td>
+                          <td className="py-1 text-right">
+                            {t.quantity}
+                          </td>
+                          <td className="py-1 text-right">
+                            ₹{t.price.toFixed(2)}
+                          </td>
+                          <td className="py-1 text-right">
+                            ₹{t.fee.toFixed(2)}
+                          </td>
+                          <td className="py-1 text-right">
+                            <span
+                              className={
+                                t.realizedPnl >= 0
+                                  ? "text-green-500"
+                                  : "text-red-500"
+                              }
+                            >
+                              ₹{t.realizedPnl.toFixed(2)}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </motion.div>
           </div>
         </section>
@@ -704,7 +1053,9 @@ function OrderPanel({
   };
 
   const panelBg = isDark ? "bg-gray-900" : "bg-gray-100";
-  const inputBg = isDark ? "bg-gray-800 border-gray-700" : "bg-white border-gray-300";
+  const inputBg = isDark
+    ? "bg-gray-800 border-gray-700"
+    : "bg-white border-gray-300";
   const textMuted = isDark ? "text-gray-400" : "text-gray-600";
   const textNormal = isDark ? "text-gray-200" : "text-gray-800";
 
@@ -773,7 +1124,9 @@ function OrderPanel({
         type="submit"
         disabled={loading}
         className={`mt-1 py-1.5 rounded-full text-white ${
-          side === "BUY" ? "bg-green-500 hover:bg-green-600" : "bg-red-500 hover:bg-red-600"
+          side === "BUY"
+            ? "bg-green-500 hover:bg-green-600"
+            : "bg-red-500 hover:bg-red-600"
         } disabled:opacity-60`}
       >
         {loading ? "Placing..." : side === "BUY" ? "Buy" : "Sell"}
@@ -798,13 +1151,15 @@ function WatchlistCard({
 
   useEffect(() => {
     const interval = setInterval(() => {
-      const { change: c, percentChange: pc } = generateRandomChange(price);
-      setPrice((prev) => prev + c);
-      setChange(c);
-      setPercentChange(pc);
+      setPrice((prev) => {
+        const { change: c, percentChange: pc } = generateRandomChange(prev);
+        setChange(c);
+        setPercentChange(pc);
+        return prev + c;
+      });
     }, 1000);
     return () => clearInterval(interval);
-  }, [price]);
+  }, []);
 
   const cardBg = isDark ? "bg-gray-900" : "bg-white";
   const textMain = isDark ? "text-white" : "text-gray-900";
