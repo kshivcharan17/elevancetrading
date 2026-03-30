@@ -22,7 +22,6 @@ import {
   Watchlist,
   Preferences,
   Portfolio,
-  Holding,
   IndicatorsState,
   Trade,
   getTrades,
@@ -66,8 +65,8 @@ function Header({ isDark }: { isDark: boolean }) {
     : "flex justify-between items-center p-4 bg-white text-gray-900 border-b border-gray-200";
 
   const inputClass = isDark
-    ? "pl-10 pr-4 py-2 bg-gray-800 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-100"
-    : "pl-10 pr-4 py-2 bg-gray-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900";
+    ? "w-full pl-10 pr-4 py-2 bg-gray-800 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-100"
+    : "w-full pl-10 pr-4 py-2 bg-gray-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900";
 
   const iconColor = isDark ? "text-gray-300" : "text-gray-600";
   const iconHover = isDark ? "hover:text-blue-500" : "hover:text-blue-600";
@@ -76,10 +75,10 @@ function Header({ isDark }: { isDark: boolean }) {
 
   return (
     <motion.header {...fadeInUp} className={headerClass}>
-      <div className="flex items-center space-x-8">
+      <div className="flex items-center space-x-4 sm:space-x-8">
         <motion.span
           onClick={() => router.push("/")}
-          className="text-2xl font-bold text-blue-500 cursor-pointer"
+          className="text-xl sm:text-2xl font-bold text-blue-500 cursor-pointer"
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
         >
@@ -118,8 +117,9 @@ function Header({ isDark }: { isDark: boolean }) {
         </nav>
       </div>
 
+      {/* Right side desktop */}
       <div className="hidden md:flex items-center space-x-4">
-        <div className="relative">
+        <div className="relative w-64">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
@@ -158,7 +158,11 @@ function Header({ isDark }: { isDark: boolean }) {
         </motion.div>
       </div>
 
-      <div className="md:hidden">
+      {/* Mobile header right */}
+      <div className="md:hidden flex items-center gap-3">
+        <button className="text-sm text-blue-400" onClick={() => router.push("/dashboard")}>
+          Dashboard
+        </button>
         <motion.button
           onClick={() => setIsMenuOpen(!isMenuOpen)}
           whileHover={{ scale: 1.1 }}
@@ -186,10 +190,10 @@ function Header({ isDark }: { isDark: boolean }) {
               <X />
             </motion.button>
             <nav className="mt-8">
-              <ul className="space-y-4">
+              <ul className="space-y-4 text-sm">
                 <li>
                   <a
-                    href="#"
+                    href="/"
                     className="text-blue-500 font-semibold flex items-center"
                   >
                     <Zap className="mr-2" size={16} />
@@ -198,7 +202,7 @@ function Header({ isDark }: { isDark: boolean }) {
                 </li>
                 <li>
                   <a
-                    href="#"
+                    href="/"
                     className={`${iconColor} ${iconHover} transition-colors flex items-center`}
                   >
                     <Globe className="mr-2" size={16} />
@@ -207,7 +211,7 @@ function Header({ isDark }: { isDark: boolean }) {
                 </li>
                 <li>
                   <a
-                    href="#"
+                    href="/"
                     className={`${iconColor} ${iconHover} transition-colors flex items-center`}
                   >
                     <BookOpen className="mr-2" size={16} />
@@ -284,7 +288,6 @@ export default function DashboardPage() {
   // trade history
   const [trades, setTradesState] = useState<Trade[]>([]);
 
-  // indicators enabled for the chart
   const enabledIndicators = indicators
     .filter((ind) => ind.enabled)
     .map((ind) => ind.id);
@@ -303,7 +306,7 @@ export default function DashboardPage() {
         const next: Record<string, number> = {};
         for (const sym of Object.keys(prev)) {
           const prevPrice = prev[sym];
-          const change = (Math.random() * 2 - 1) * (prevPrice * 0.003); // ±0.3%
+          const change = (Math.random() * 2 - 1) * (prevPrice * 0.003);
           next[sym] = Math.max(1, prevPrice + change);
         }
         return next;
@@ -332,7 +335,6 @@ export default function DashboardPage() {
         inds.length
           ? inds
           : [
-              // defaults for analytics dashboard
               { id: "sma", enabled: true },
               { id: "rsi", enabled: true },
               { id: "vol", enabled: true },
@@ -366,7 +368,7 @@ export default function DashboardPage() {
       await setPreferences(user.uid, updated);
     };
 
-  // FIXED: do not execute SELL strategy orders if you don't hold the asset
+  // Only execute SELL signals if there's a holding
   const handleStrategySignal = async (signal: StrategySignal) => {
     const sym = signal.assetId.toUpperCase();
     const price = prices[sym] ?? signal.price;
@@ -374,7 +376,6 @@ export default function DashboardPage() {
     if (signal.side === "SELL") {
       const holding = portfolio.find((h) => h.symbol === sym);
       if (!holding || holding.quantity <= 0) {
-        // No shares to sell; ignore this signal
         return;
       }
     }
@@ -411,7 +412,7 @@ export default function DashboardPage() {
   }) => {
     const sym = order.symbol.toUpperCase();
     const notional = order.price * order.quantity;
-    const feeRate = 0.001; // 0.1%
+    const feeRate = 0.001;
     const fee = notional * feeRate;
 
     let updatedHoldings = [...portfolio];
@@ -459,7 +460,6 @@ export default function DashboardPage() {
         timestamp: Date.now(),
       });
     } else {
-      // SELL
       if (!existing || existing.quantity < order.quantity) {
         alert("Not enough quantity to sell");
         return;
@@ -577,22 +577,24 @@ export default function DashboardPage() {
     <div className={appBg}>
       <Header isDark={isDark} />
 
-      <main className="container mx-auto px-4 py-4 space-y-8">
+      <main className="container mx-auto max-w-full px-3 sm:px-4 py-4 space-y-8">
         {/* Top bar */}
         <motion.section
           {...fadeInUp}
           className="flex flex-col md:flex-row md:items-center md:justify-between gap-4"
         >
-          <div>
-            <h1 className={`text-2xl font-semibold ${headingText}`}>
+          <div className="min-w-0">
+            <h1
+              className={`text-xl sm:text-2xl font-semibold break-words ${headingText}`}
+            >
               Welcome, {user.email}
             </h1>
-            <p className={`${subText} text-sm`}>
+            <p className={`${subText} text-xs sm:text-sm`}>
               Your personalized ElevanceTrading dashboard
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex gap-4 text-sm">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex gap-4 text-xs sm:text-sm">
               <div>
                 <label className={`${subText} text-xs mb-1 block`}>
                   Theme
@@ -639,40 +641,44 @@ export default function DashboardPage() {
         </motion.section>
 
         {/* Multi-asset analytics chart */}
-        <section className={`${cardBg} rounded-lg p-4 shadow-md`}>
-          <MultiAssetChart
-            isDark={isDark}
-            uid={user.uid}
-            onStrategySignal={handleStrategySignal}
-            enabledIndicators={enabledIndicators}
-          />
+        <section className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}>
+          <div className="w-full overflow-x-auto">
+            <div className="min-w-[320px] h-72">
+              <MultiAssetChart
+                isDark={isDark}
+                uid={user.uid}
+                onStrategySignal={handleStrategySignal}
+                enabledIndicators={enabledIndicators}
+              />
+            </div>
+          </div>
         </section>
 
         {/* Main grid */}
-        <section className="grid lg:grid-cols-3 gap-6">
+        <section className="grid lg:grid-cols-3 gap-4 sm:gap-6">
           {/* LEFT */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-2 space-y-4 sm:space-y-6">
             {/* Watchlist */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <div className="flex justify-between items-center mb-3">
-                <h2 className={`text-lg font-semibold ${headingText}`}>
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-3 gap-1">
+                <h2 className={`text-base sm:text-lg font-semibold ${headingText}`}>
                   Your Watchlist
                 </h2>
                 <span className={`text-xs ${subText}`}>
-                  Click star on cards to add / remove
+                  Tap the star on cards to add / remove
                 </span>
               </div>
 
               {watchlist.length === 0 ? (
                 <p className={`${subText} text-sm`}>
                   You don&apos;t have any symbols yet. Add some using the
-                  portfolio order panel or explore sections.
+                  order panel or explore sections.
                 </p>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 xs:grid-cols-2 md:grid-cols-3 gap-3">
                   {watchlist.map((sym) => (
                     <WatchlistCard
                       key={sym}
@@ -688,10 +694,10 @@ export default function DashboardPage() {
             {/* Top by market cap */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <div className="flex justify-between items-center mb-3">
-                <h2 className={`text-lg font-semibold ${headingText}`}>
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-3 gap-1">
+                <h2 className={`text-base sm:text-lg font-semibold ${headingText}`}>
                   Top by Market Cap
                 </h2>
                 <span className="text-xs text-blue-500 cursor-pointer">
@@ -720,9 +726,9 @@ export default function DashboardPage() {
             {/* Asset Allocation */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+              <h2 className={`text-base sm:text-lg font-semibold mb-3 ${headingText}`}>
                 Asset Allocation
               </h2>
               {allocation.length === 0 ? (
@@ -730,7 +736,7 @@ export default function DashboardPage() {
                   No holdings yet. Allocation will appear once you buy assets.
                 </p>
               ) : (
-                <div className="space-y-2 text-sm">
+                <div className="space-y-2 text-xs sm:text-sm">
                   {allocation.map((a) => (
                     <div key={a.symbol}>
                       <div className="flex justify-between mb-1">
@@ -753,16 +759,16 @@ export default function DashboardPage() {
           </div>
 
           {/* RIGHT */}
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             {/* Portfolio Summary */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+              <h2 className={`text-base sm:text-lg font-semibold mb-3 ${headingText}`}>
                 Portfolio Summary
               </h2>
-              <div className="space-y-1 text-sm">
+              <div className="space-y-1 text-xs sm:text-sm">
                 <div className="flex justify-between">
                   <span className={subText}>Total Value</span>
                   <span className={headingText}>
@@ -805,9 +811,9 @@ export default function DashboardPage() {
             {/* Place Order */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+              <h2 className={`text-base sm:text-lg font-semibold mb-3 ${headingText}`}>
                 Place Order
               </h2>
               <OrderPanel
@@ -822,9 +828,9 @@ export default function DashboardPage() {
             {/* Holdings */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+              <h2 className={`text-base sm:text-lg font-semibold mb-3 ${headingText}`}>
                 Your Holdings
               </h2>
               {holdingsWithMetrics.length === 0 ? (
@@ -832,8 +838,8 @@ export default function DashboardPage() {
                   No holdings yet. Place a buy order to get started.
                 </p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
+                <div className="w-full overflow-x-auto">
+                  <table className="min-w-full text-[10px] sm:text-xs">
                     <thead>
                       <tr
                         className={
@@ -842,13 +848,13 @@ export default function DashboardPage() {
                             : "text-gray-500 border-b border-gray-200"
                         }
                       >
-                        <th className="text-left py-2">Symbol</th>
-                        <th className="text-right py-2">Qty</th>
-                        <th className="text-right py-2">Avg Price</th>
-                        <th className="text-right py-2">Price</th>
-                        <th className="text-right py-2">Value</th>
-                        <th className="text-right py-2">Unrealized P/L</th>
-                        <th className="text-right py-2">Realized P/L</th>
+                        <th className="text-left py-2 px-1">Symbol</th>
+                        <th className="text-right py-2 px-1">Qty</th>
+                        <th className="text-right py-2 px-1">Avg Price</th>
+                        <th className="text-right py-2 px-1">Price</th>
+                        <th className="text-right py-2 px-1">Value</th>
+                        <th className="text-right py-2 px-1">Unrealized P/L</th>
+                        <th className="text-right py-2 px-1">Realized P/L</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -861,18 +867,20 @@ export default function DashboardPage() {
                               : "border-b border-gray-100"
                           }
                         >
-                          <td className="py-2">{h.symbol}</td>
-                          <td className="py-2 text-right">{h.quantity}</td>
-                          <td className="py-2 text-right">
+                          <td className="py-2 px-1">{h.symbol}</td>
+                          <td className="py-2 px-1 text-right">
+                            {h.quantity}
+                          </td>
+                          <td className="py-2 px-1 text-right">
                             ₹{h.avgPrice.toFixed(2)}
                           </td>
-                          <td className="py-2 text-right">
+                          <td className="py-2 px-1 text-right">
                             ₹{h.price.toFixed(2)}
                           </td>
-                          <td className="py-2 text-right">
+                          <td className="py-2 px-1 text-right">
                             ₹{h.currentValue.toFixed(2)}
                           </td>
-                          <td className="py-2 text-right">
+                          <td className="py-2 px-1 text-right">
                             <span
                               className={
                                 h.unrealized >= 0
@@ -883,7 +891,7 @@ export default function DashboardPage() {
                               ₹{h.unrealized.toFixed(2)}
                             </span>
                           </td>
-                          <td className="py-2 text-right">
+                          <td className="py-2 px-1 text-right">
                             <span
                               className={
                                 h.realized >= 0
@@ -905,9 +913,9 @@ export default function DashboardPage() {
             {/* Indicators (controls analytics dashboard) */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+              <h2 className={`text-base sm:text-lg font-semibold mb-3 ${headingText}`}>
                 Chart Indicators
               </h2>
               {indicators.length === 0 ? (
@@ -916,7 +924,7 @@ export default function DashboardPage() {
                   analytics dashboard below.
                 </p>
               ) : (
-                <div className="space-y-2 text-sm">
+                <div className="space-y-2 text-xs sm:text-sm">
                   {indicators.map((ind) => (
                     <label
                       key={ind.id}
@@ -942,9 +950,9 @@ export default function DashboardPage() {
             {/* Trade History */}
             <motion.div
               {...fadeInUp}
-              className={`${cardBg} rounded-lg p-4 shadow-md`}
+              className={`${cardBg} rounded-lg p-3 sm:p-4 shadow-md`}
             >
-              <h2 className={`text-lg font-semibold mb-3 ${headingText}`}>
+              <h2 className={`text-base sm:text-lg font-semibold mb-3 ${headingText}`}>
                 Trade History
               </h2>
               {trades.length === 0 ? (
@@ -952,8 +960,8 @@ export default function DashboardPage() {
                   No trades yet. Place buy/sell orders to build history.
                 </p>
               ) : (
-                <div className="max-h-64 overflow-y-auto text-xs">
-                  <table className="w-full">
+                <div className="max-h-64 overflow-y-auto w-full overflow-x-auto text-[10px] sm:text-xs">
+                  <table className="min-w-full">
                     <thead>
                       <tr
                         className={
@@ -962,41 +970,41 @@ export default function DashboardPage() {
                             : "text-gray-500 border-b border-gray-200"
                         }
                       >
-                        <th className="text-left py-1">Time</th>
-                        <th className="text-left py-1">Symbol</th>
-                        <th className="text-left py-1">Side</th>
-                        <th className="text-right py-1">Qty</th>
-                        <th className="text-right py-1">Price</th>
-                        <th className="text-right py-1">Fee</th>
-                        <th className="text-right py-1">Realized P/L</th>
+                        <th className="text-left py-1 px-1">Time</th>
+                        <th className="text-left py-1 px-1">Symbol</th>
+                        <th className="text-left py-1 px-1">Side</th>
+                        <th className="text-right py-1 px-1">Qty</th>
+                        <th className="text-right py-1 px-1">Price</th>
+                        <th className="text-right py-1 px-1">Fee</th>
+                        <th className="text-right py-1 px-1">Realized P/L</th>
                       </tr>
                     </thead>
                     <tbody>
                       {trades.map((t) => (
                         <tr key={t.id}>
-                          <td className="py-1">
+                          <td className="py-1 px-1">
                             {new Date(t.timestamp).toLocaleTimeString()}
                           </td>
-                          <td className="py-1">{t.symbol}</td>
+                          <td className="py-1 px-1">{t.symbol}</td>
                           <td
-                            className={
+                            className={`py-1 px-1 ${
                               t.side === "BUY"
                                 ? "text-green-500"
                                 : "text-red-500"
-                            }
+                            }`}
                           >
                             {t.side}
                           </td>
-                          <td className="py-1 text-right">
+                          <td className="py-1 px-1 text-right">
                             {t.quantity}
                           </td>
-                          <td className="py-1 text-right">
+                          <td className="py-1 px-1 text-right">
                             ₹{t.price.toFixed(2)}
                           </td>
-                          <td className="py-1 text-right">
+                          <td className="py-1 px-1 text-right">
                             ₹{t.fee.toFixed(2)}
                           </td>
-                          <td className="py-1 text-right">
+                          <td className="py-1 px-1 text-right">
                             <span
                               className={
                                 t.realizedPnl >= 0
@@ -1082,7 +1090,7 @@ function OrderPanel({
   return (
     <form
       onSubmit={handleSubmit}
-      className={`flex flex-col gap-3 text-xs ${panelBg} rounded-lg p-3`}
+      className={`flex flex-col gap-3 text-xs sm:text-xs ${panelBg} rounded-lg p-3`}
     >
       <div className="flex gap-2">
         <button
