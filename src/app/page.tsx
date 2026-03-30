@@ -139,7 +139,7 @@ export default function DashboardLanding() {
     if (!user) {
       router.push("/login");
     } else {
-      router.push("/dashboard/app");
+      router.push("/dashboard");
     }
   };
 
@@ -147,7 +147,7 @@ export default function DashboardLanding() {
     if (!user) {
       router.push("/login");
     } else {
-      router.push("/dashboard/app");
+      router.push("/dashboard");
     }
   };
 
