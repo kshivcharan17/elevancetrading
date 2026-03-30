@@ -366,11 +366,22 @@ export default function DashboardPage() {
       await setPreferences(user.uid, updated);
     };
 
+  // FIXED: do not execute SELL strategy orders if you don't hold the asset
   const handleStrategySignal = async (signal: StrategySignal) => {
-    const price = prices[signal.assetId] ?? signal.price;
+    const sym = signal.assetId.toUpperCase();
+    const price = prices[sym] ?? signal.price;
+
+    if (signal.side === "SELL") {
+      const holding = portfolio.find((h) => h.symbol === sym);
+      if (!holding || holding.quantity <= 0) {
+        // No shares to sell; ignore this signal
+        return;
+      }
+    }
+
     await handleOrder({
       side: signal.side,
-      symbol: signal.assetId,
+      symbol: sym,
       price,
       quantity: 1,
     });
