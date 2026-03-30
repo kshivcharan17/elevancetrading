@@ -32,7 +32,6 @@ type AssetConfig = {
 
 type DataPoint = {
   time: string;
-  // for each asset we store OHLC object for candles, { close } for line/bar
   [key: string]: any;
 };
 
@@ -123,13 +122,13 @@ function CandleShape(props: CandleProps) {
   );
 }
 
-/* ---------- Pattern detection types/helpers ---------- */
+/* ---------- Pattern detection ---------- */
 
 type PatternType = "hammer" | "doji" | "bullish_engulfing";
 
 type PatternHit = {
-  index: number; // index in data[]
-  assetId: string; // "BTC"
+  index: number;
+  assetId: string;
   type: PatternType;
 };
 
@@ -165,11 +164,12 @@ function isBullishEngulfing(prev: any, curr: any): boolean {
   return o2 < c1 && c2 > o1;
 }
 
-/* ---------- Indicators & strategy types ---------- */
+/* ---------- Indicators & strategy ---------- */
 
 type IndicatorValues = {
   sma20?: number;
   rsi14?: number;
+  vol20?: number; // 20‑period volatility
 };
 
 type IndicatorState = Record<string, IndicatorValues>;
@@ -180,7 +180,9 @@ type StrategyRule = {
   assetId: string;
   type: StrategyRuleType;
   enabled: boolean;
-  size: number; // quantity per trade
+  size: number;
+  // simple params for customization
+  rsiThreshold?: number; // used for rsi_overbought
 };
 
 export type StrategySignal = {
@@ -192,8 +194,11 @@ export type StrategySignal = {
 };
 
 /* ---------- Indicator helpers ---------- */
+
 function calcSMA(values: number[], period: number): (number | undefined)[] {
-  const res: (number | undefined)[] = new Array(values.length).fill(undefined);
+  const res: (number | undefined)[] = new Array(values.length).fill(
+    undefined
+  );
   if (values.length < period) return res;
 
   let sum = 0;
@@ -211,15 +216,16 @@ function calcSMA(values: number[], period: number): (number | undefined)[] {
   return res;
 }
 
-// Wilder's RSI(14) approximation
+// Wilder's RSI(14)
 function calcRSI(values: number[], period = 14): (number | undefined)[] {
-  const res: (number | undefined)[] = new Array(values.length).fill(undefined);
+  const res: (number | undefined)[] = new Array(values.length).fill(
+    undefined
+  );
   if (values.length < period + 1) return res;
 
   let gainSum = 0;
   let lossSum = 0;
 
-  // First average gain/loss over initial period
   for (let i = 1; i <= period; i++) {
     const change = values[i] - values[i - 1];
     const gain = Math.max(change, 0);
@@ -231,14 +237,13 @@ function calcRSI(values: number[], period = 14): (number | undefined)[] {
   let avgGain = gainSum / period;
   let avgLoss = lossSum / period;
 
-  // First RSI at index `period`
+  const firstIndex = period;
   {
     const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
     const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
-    res[period] = rsi;
+    res[firstIndex] = rsi;
   }
 
-  // Subsequent RSIs
   for (let i = period + 1; i < values.length; i++) {
     const change = values[i] - values[i - 1];
     const gain = Math.max(change, 0);
@@ -255,16 +260,51 @@ function calcRSI(values: number[], period = 14): (number | undefined)[] {
   return res;
 }
 
+// rolling volatility of returns
+function calcVolatility(
+  values: number[],
+  period: number
+): (number | undefined)[] {
+  const res: (number | undefined)[] = new Array(values.length).fill(
+    undefined
+  );
+  if (values.length < period + 1) return res;
+
+  const returns: number[] = [];
+  for (let i = 1; i < values.length; i++) {
+    const prev = values[i - 1];
+    const curr = values[i];
+    const r = prev === 0 ? 0 : (curr - prev) / prev;
+    returns.push(r);
+  }
+
+  for (let i = period - 1; i < returns.length; i++) {
+    const window = returns.slice(i - period + 1, i + 1);
+    const mean = window.reduce((s, v) => s + v, 0) / window.length;
+    const variance =
+      window.reduce((s, v) => s + (v - mean) ** 2, 0) / window.length;
+    const std = Math.sqrt(variance);
+
+    const dataIndex = i + 1;
+    res[dataIndex] = std;
+  }
+
+  return res;
+}
+
 /* ---------- Component ---------- */
 
 export default function MultiAssetChart({
   isDark,
   uid,
   onStrategySignal,
+  enabledIndicators = [],
 }: {
   isDark: boolean;
   uid: string;
   onStrategySignal?: (signal: StrategySignal) => void;
+  // provided by DashboardPage based on user toggles: ["sma", "rsi", "vol"]
+  enabledIndicators?: string[];
 }) {
   const [assets, setAssets] = useState<AssetConfig[]>(ASSETS_INITIAL);
   const [data, setData] = useState<DataPoint[]>([]);
@@ -292,7 +332,10 @@ export default function MultiAssetChart({
     Record<string, boolean | undefined>
   >({});
 
-  // simple default rules for all assets
+  // adjustable chart time window (number of points)
+  const [windowSize, setWindowSize] = useState<number>(60);
+
+  // default strategy rules (now customizable)
   const defaultRules: StrategyRule[] = ASSETS_INITIAL.flatMap((a) => [
     {
       assetId: a.id,
@@ -305,11 +348,13 @@ export default function MultiAssetChart({
       type: "rsi_overbought",
       enabled: true,
       size: 1,
+      rsiThreshold: 70,
     },
   ]);
-  const [strategyRules] = useState<StrategyRule[]>(defaultRules);
+  const [strategyRules, setStrategyRules] =
+    useState<StrategyRule[]>(defaultRules);
 
-  // load saved asset config from Firestore
+  // load saved asset config
   useEffect(() => {
     if (!uid) return;
     (async () => {
@@ -333,7 +378,7 @@ export default function MultiAssetChart({
     })();
   }, [uid]);
 
-  // init + live updates for data
+  // init + live random data
   useEffect(() => {
     let current = { ...lastValues };
 
@@ -384,14 +429,14 @@ export default function MultiAssetChart({
         setLastValues(nextLast);
 
         const nextData = [...prev, dp];
-        if (nextData.length > 60) nextData.shift();
+        if (nextData.length > windowSize) nextData.shift();
         return nextData;
       });
     }, 1000);
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [windowSize]);
 
   // detect patterns for BTC
   useEffect(() => {
@@ -421,35 +466,35 @@ export default function MultiAssetChart({
     setPatterns(hits);
   }, [data]);
 
-  // compute indicators (SMA20, RSI14) for all assets and fire strategy
+  // compute indicators + evaluate strategies
   useEffect(() => {
     const newIndicators: IndicatorState = {};
 
     for (const asset of ASSETS_INITIAL) {
       const closes = data.map((dp) => {
         const v = dp[asset.id];
-        if (!v) return undefined;
+        if (!v) return 0;
         if (typeof v === "number") return v;
         if (typeof v === "object" && "close" in v) return v.close as number;
-        return undefined;
+        return 0;
       });
 
-      const numericCloses = closes.map((v) => v ?? 0);
-      const smaArr = calcSMA(numericCloses, 20);
-      const rsiArr = calcRSI(numericCloses, 14);
+      const smaArr = calcSMA(closes, 20);
+      const rsiArr = calcRSI(closes, 14);
+      const volArr = calcVolatility(closes, 20);
 
       const lastIdx = data.length - 1;
       if (lastIdx >= 0) {
         newIndicators[asset.id] = {
           sma20: smaArr[lastIdx],
           rsi14: rsiArr[lastIdx],
+          vol20: volArr[lastIdx],
         };
       }
     }
 
     setIndicators(newIndicators);
 
-    // strategy evaluation for latest candle
     const lastIndex = data.length - 1;
     if (lastIndex < 1) return;
 
@@ -466,21 +511,23 @@ export default function MultiAssetChart({
       const prevVal = prevDp[id];
       if (!latestVal || !prevVal) continue;
 
-      const close = typeof latestVal === "object" ? latestVal.close : latestVal;
+      const close =
+        typeof latestVal === "object" ? latestVal.close : latestVal;
       const prevClose =
         typeof prevVal === "object" ? prevVal.close : prevVal;
 
       const ind = newIndicators[id];
       if (!ind) continue;
 
-      // price_cross_sma20_up
       if (rule.type === "price_cross_sma20_up" && ind.sma20 != null) {
         const currAbove = close > ind.sma20;
         const prevAbove = prevCrossState[id];
-        if (prevAbove === false && currAbove === true) {
-          // crossing upwards now
-          if (onStrategySignal) {
-            onStrategySignal({
+
+        if (prevAbove === undefined) {
+          nextCrossState[id] = currAbove;
+        } else {
+          if (prevAbove === false && currAbove === true) {
+            onStrategySignal?.({
               assetId: id,
               side: "BUY",
               ruleType: rule.type,
@@ -488,35 +535,31 @@ export default function MultiAssetChart({
               time: latestDp.time,
             });
           }
+          nextCrossState[id] = currAbove;
         }
-        nextCrossState[id] = currAbove;
       }
 
-      // rsi_overbought
       if (rule.type === "rsi_overbought" && ind.rsi14 != null) {
-        if (ind.rsi14 > 70) {
-          if (onStrategySignal) {
-            onStrategySignal({
-              assetId: id,
-              side: "SELL",
-              ruleType: rule.type,
-              price: close,
-              time: latestDp.time,
-            });
-          }
+        const threshold = rule.rsiThreshold ?? 70;
+        if (ind.rsi14 > threshold) {
+          onStrategySignal?.({
+            assetId: id,
+            side: "SELL",
+            ruleType: rule.type,
+            price: close,
+            time: latestDp.time,
+          });
         }
       }
 
-      // prevClose used so TS doesn't complain it's unused, and you
-      // can extend logic later if needed
       void prevClose;
     }
 
     setPrevCrossState(nextCrossState);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [data, strategyRules]);
 
-  // persist asset config when it changes, after initial load
+  // persist config
   useEffect(() => {
     if (!uid || !loaded) return;
     const config: AssetChartConfig[] = assets.map((a) => ({
@@ -550,13 +593,13 @@ export default function MultiAssetChart({
     }));
   };
 
-  // styling based on theme
+  // styling
   const titleText = isDark ? "text-white" : "text-gray-900";
   const controlBg = isDark ? "bg-gray-800" : "bg-gray-200";
   const selectBg =
     isDark
       ? "bg-gray-900 border border-gray-700 text-gray-200"
-      : "bg-white border border-gray-300 text-gray-800";
+      : "bg-white border-gray-300 text-gray-800";
   const chartWrapperBg = isDark ? "bg-gray-900" : "bg-gray-100";
   const gridColor = isDark ? "#374151" : "#E5E7EB";
   const axisColor = isDark ? "#9CA3AF" : "#6B7280";
@@ -564,7 +607,7 @@ export default function MultiAssetChart({
   const tooltipBorder = isDark ? "#374151" : "#D1D5DB";
   const tooltipText = isDark ? "#E5E7EB" : "#111827";
 
-  // helper to flatten OHLC into numeric for Y-axis
+  // flatten data for chart Y axis
   const valueAccessor = (assetId: string, dp: DataPoint) => {
     const v = dp[assetId];
     if (!v) return undefined;
@@ -582,7 +625,7 @@ export default function MultiAssetChart({
     return out;
   });
 
-  // pattern markers renderer
+  // pattern markers
   const renderPatternMarkers = (props: any) => {
     const { xAxisMap, yAxisMap } = props;
     if (!xAxisMap || !yAxisMap) return null;
@@ -611,13 +654,23 @@ export default function MultiAssetChart({
           if (price == null) return null;
           const y = yScale(price);
 
-          let color = "#A855F7"; // purple for doji
-          if (p.type === "hammer") color = "#22C55E"; // green
-          if (p.type === "bullish_engulfing") color = "#F97316"; // orange
+          let color = "#A855F7";
+          if (p.type === "hammer") color = "#22C55E";
+          if (p.type === "bullish_engulfing") color = "#F97316";
+
+          const radius =
+            p.type === "hammer" && patternFilter.hammer
+              ? 5
+              : p.type === "doji" && patternFilter.doji
+              ? 5
+              : p.type === "bullish_engulfing" &&
+                patternFilter.bullish_engulfing
+              ? 5
+              : 3;
 
           return (
             <g key={`${p.type}-${p.index}-${idx}`}>
-              <circle cx={x} cy={y + 14} r={4} fill={color} />
+              <circle cx={x} cy={y + 14} r={radius} fill={color} />
             </g>
           );
         })}
@@ -627,13 +680,12 @@ export default function MultiAssetChart({
 
   return (
     <div className="space-y-4">
-      {/* controls */}
+      {/* Controls */}
       <div className="flex flex-wrap gap-4 items-center justify-between">
         <h2 className={`text-lg font-semibold ${titleText}`}>
-          Multi‑Asset Chart (Random Data)
+          Multi‑Asset Analytics (Random Data)
         </h2>
         <div className="flex flex-wrap gap-3 text-xs items-center">
-          {/* asset toggles */}
           {assets.map((asset) => (
             <div
               key={asset.id}
@@ -663,7 +715,21 @@ export default function MultiAssetChart({
             </div>
           ))}
 
-          {/* pattern filters */}
+          {/* Time window selector */}
+          <div className="flex items-center gap-1 ml-4 text-[11px]">
+            <span className={titleText}>Window:</span>
+            <select
+              value={windowSize}
+              onChange={(e) => setWindowSize(Number(e.target.value))}
+              className={`${selectBg} rounded px-1 py-0.5 text-[10px]`}
+            >
+              <option value={60}>~1 min</option>
+              <option value={180}>~3 min</option>
+              <option value={600}>~10 min</option>
+            </select>
+          </div>
+
+          {/* Pattern filters */}
           <div className="flex flex-wrap gap-2 ml-4">
             <label className="flex items-center gap-1 text-[11px]">
               <input
@@ -695,7 +761,7 @@ export default function MultiAssetChart({
         </div>
       </div>
 
-      {/* chart */}
+      {/* Main chart */}
       <div className={`h-72 ${chartWrapperBg} rounded-lg p-3`}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
@@ -712,12 +778,8 @@ export default function MultiAssetChart({
                 borderRadius: "0.5rem",
                 color: tooltipText,
               }}
-              labelStyle={{
-                color: tooltipText,
-              }}
-              itemStyle={{
-                color: tooltipText,
-              }}
+              labelStyle={{ color: tooltipText }}
+              itemStyle={{ color: tooltipText }}
               formatter={(value: any, name, props: any) => {
                 const idx = props?.payload?.index;
                 const dataKey: string = props?.dataKey || name;
@@ -740,19 +802,23 @@ export default function MultiAssetChart({
                       ? " | " +
                         hitsHere
                           .map((p) => {
-                            if (p.type === "hammer") return "Hammer";
-                            if (p.type === "doji") return "Doji";
+                            if (p.type === "hammer")
+                              return "Hammer: potential bullish reversal after a down move";
+                            if (p.type === "doji")
+                              return "Doji: indecision, possible pause or reversal";
                             if (p.type === "bullish_engulfing")
-                              return "Bullish Engulfing";
+                              return "Bullish Engulfing: strong bullish reversal signal";
                             return p.type;
                           })
-                          .join(", ")
+                          .join(" | ")
                       : "";
 
                   return [
                     `O:${v.open.toFixed(2)} H:${v.high.toFixed(
                       2
-                    )} L:${v.low.toFixed(2)} C:${v.close.toFixed(2)}${patternText}`,
+                    )} L:${v.low.toFixed(2)} C:${v.close.toFixed(
+                      2
+                    )}${patternText}`,
                     dataKey,
                   ];
                 }
@@ -811,18 +877,192 @@ export default function MultiAssetChart({
                 );
               })}
 
-            {/* pattern markers for BTC */}
             <Customized component={renderPatternMarkers} />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
+      {/* Indicator summary panel */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-[11px]">
+        {ASSETS_INITIAL.map((asset) => {
+          const vals = indicators[asset.id];
+          if (!vals) return null;
+
+          const showSma = enabledIndicators.includes("sma");
+          const showRsi = enabledIndicators.includes("rsi");
+          const showVol = enabledIndicators.includes("vol");
+
+          return (
+            <div
+              key={asset.id}
+              className={`rounded-lg px-3 py-2 ${
+                isDark ? "bg-gray-800" : "bg-gray-200"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-xs">
+                  {asset.id} Indicators
+                </span>
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: asset.color }}
+                />
+              </div>
+
+              {showSma && vals.sma20 != null && (
+                <div>
+                  SMA20:{" "}
+                  <span className="font-medium">
+                    {vals.sma20.toFixed(2)}
+                  </span>
+                </div>
+              )}
+
+              {showRsi && vals.rsi14 != null && (
+                <div>
+                  RSI14:{" "}
+                  <span
+                    className={
+                      vals.rsi14 > 70
+                        ? "text-red-500 font-medium"
+                        : vals.rsi14 < 30
+                        ? "text-green-500 font-medium"
+                        : "font-medium"
+                    }
+                  >
+                    {vals.rsi14.toFixed(1)}
+                  </span>
+                </div>
+              )}
+
+              {showVol && vals.vol20 != null && (
+                <div>
+                  Vol20:{" "}
+                  <span
+                    className={
+                      vals.vol20 > 0.03
+                        ? "text-red-500 font-medium"
+                        : vals.vol20 > 0.015
+                        ? "text-yellow-500 font-medium"
+                        : "text-green-500 font-medium"
+                    }
+                  >
+                    {(vals.vol20 * 100).toFixed(2)}%
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Strategy Rules Panel */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px]">
+        {ASSETS_INITIAL.map((asset) => {
+          const rulesForAsset = strategyRules.filter(
+            (r) => r.assetId === asset.id
+          );
+
+          return (
+            <div
+              key={asset.id}
+              className={`rounded-lg px-3 py-2 ${
+                isDark ? "bg-gray-800" : "bg-gray-200"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-xs">
+                  {asset.id} Strategies
+                </span>
+              </div>
+
+              {rulesForAsset.map((rule, idx) => {
+                if (rule.type === "price_cross_sma20_up") {
+                  return (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between mb-1"
+                    >
+                      <label className="flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={rule.enabled}
+                          onChange={() => {
+                            setStrategyRules((prev) =>
+                              prev.map((r) =>
+                                r === rule ? { ...r, enabled: !r.enabled } : r
+                              )
+                            );
+                          }}
+                        />
+                        <span>Buy on SMA20 cross up</span>
+                      </label>
+                    </div>
+                  );
+                }
+
+                if (rule.type === "rsi_overbought") {
+                  return (
+                    <div key={idx} className="flex flex-col gap-1 mb-1">
+                      <label className="flex items-center justify-between">
+                        <span>Sell when RSI &gt; threshold</span>
+                        <input
+                          type="checkbox"
+                          checked={rule.enabled}
+                          onChange={() => {
+                            setStrategyRules((prev) =>
+                              prev.map((r) =>
+                                r === rule ? { ...r, enabled: !r.enabled } : r
+                              )
+                            );
+                          }}
+                        />
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <span>Threshold:</span>
+                        <input
+                          type="number"
+                          min={50}
+                          max={90}
+                          step={1}
+                          value={rule.rsiThreshold ?? 70}
+                          onChange={(e) => {
+                            const val = Number(e.target.value) || 70;
+                            setStrategyRules((prev) =>
+                              prev.map((r) =>
+                                r === rule
+                                  ? { ...r, rsiThreshold: val }
+                                  : r
+                              )
+                            );
+                          }}
+                          className={`w-14 text-right px-1 py-0.5 rounded border ${
+                            isDark
+                              ? "bg-gray-900 border-gray-700 text-gray-200"
+                              : "bg-white border-gray-300 text-gray-800"
+                          }`}
+                        />
+                      </div>
+                    </div>
+                  );
+                }
+
+                return null;
+              })}
+            </div>
+          );
+        })}
+      </div>
+
       <p className="text-[11px] text-gray-500">
-        Candles are simulated OHLC data (open, high, low, close). Detected
-        patterns (Hammer, Doji, Bullish Engulfing) are highlighted for BTC and
-        update as new candles form. Simple strategies (price crossing SMA20 &
-        RSI overbought) are evaluated for all assets, emitting signals back to
-        the dashboard.
+        This dashboard simulates live multi‑asset markets and computes key
+        indicators in real time: SMA20 (trend), RSI14 (momentum), and
+        20‑period volatility (risk). It also highlights classical candlestick
+        patterns (Hammer, Doji, Bullish Engulfing) with explanations in the
+        tooltip. Use the indicator toggles, pattern filters, time window
+        selector, and strategy settings to experiment with automated trading
+        ideas and deepen your understanding of trends, momentum, risk, and
+        price behavior.
       </p>
     </div>
   );

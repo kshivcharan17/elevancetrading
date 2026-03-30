@@ -36,7 +36,6 @@ import {
   ShoppingCart,
   User as UserIcon,
   TrendingUp,
-  ChevronRight,
   Menu,
   X,
   ArrowUpRight,
@@ -285,6 +284,11 @@ export default function DashboardPage() {
   // trade history
   const [trades, setTradesState] = useState<Trade[]>([]);
 
+  // indicators enabled for the chart
+  const enabledIndicators = indicators
+    .filter((ind) => ind.enabled)
+    .map((ind) => ind.id);
+
   // redirect if not logged in
   useEffect(() => {
     if (!authLoading && !user) {
@@ -328,8 +332,10 @@ export default function DashboardPage() {
         inds.length
           ? inds
           : [
+              // defaults for analytics dashboard
+              { id: "sma", enabled: true },
               { id: "rsi", enabled: true },
-              { id: "macd", enabled: false },
+              { id: "vol", enabled: true },
             ]
       );
       setTradesState(tr);
@@ -366,7 +372,7 @@ export default function DashboardPage() {
       side: signal.side,
       symbol: signal.assetId,
       price,
-      quantity: 1, // could be rule.size in the future
+      quantity: 1,
     });
   };
 
@@ -407,7 +413,7 @@ export default function DashboardPage() {
         const totalCost =
           existing.avgPrice * existing.quantity +
           order.price * order.quantity +
-          fee; // fee increases cost basis
+          fee;
 
         const newAvg = totalCost / totalQty;
 
@@ -426,7 +432,7 @@ export default function DashboardPage() {
           id: Date.now().toString(),
           symbol: sym,
           quantity: order.quantity,
-          avgPrice: order.price + fee / order.quantity, // spread fee into avgPrice
+          avgPrice: order.price + fee / order.quantity,
           realizedPnl: 0,
         });
       }
@@ -621,12 +627,13 @@ export default function DashboardPage() {
           </div>
         </motion.section>
 
-        {/* Multi-asset chart */}
+        {/* Multi-asset analytics chart */}
         <section className={`${cardBg} rounded-lg p-4 shadow-md`}>
           <MultiAssetChart
             isDark={isDark}
             uid={user.uid}
             onStrategySignal={handleStrategySignal}
+            enabledIndicators={enabledIndicators}
           />
         </section>
 
@@ -884,7 +891,7 @@ export default function DashboardPage() {
               )}
             </motion.div>
 
-            {/* Indicators */}
+            {/* Indicators (controls analytics dashboard) */}
             <motion.div
               {...fadeInUp}
               className={`${cardBg} rounded-lg p-4 shadow-md`}
@@ -894,8 +901,8 @@ export default function DashboardPage() {
               </h2>
               {indicators.length === 0 ? (
                 <p className={`${subText} text-sm`}>
-                  No indicators set. This will control what appears on your
-                  charts.
+                  No indicators set. This controls which metrics appear in the
+                  analytics dashboard below.
                 </p>
               ) : (
                 <div className="space-y-2 text-sm">
@@ -915,7 +922,9 @@ export default function DashboardPage() {
                 </div>
               )}
               <p className="text-[10px] text-gray-500 mt-2">
-                Later you&apos;ll hook this to your actual charting library.
+                Toggle SMA, RSI, and Volatility to customize your analytics
+                view. These options update the indicator summary under the
+                chart in real time.
               </p>
             </motion.div>
 

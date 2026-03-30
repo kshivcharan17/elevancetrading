@@ -1,3 +1,4 @@
+// src/lib/firebase.ts
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
@@ -9,7 +10,7 @@ const firebaseConfig = {
   storageBucket: "groww-65740.firebasestorage.app",
   messagingSenderId: "338746465654",
   appId: "1:338746465654:web:3afd70a9aa625c354eae57",
-  measurementId: "G-Q0P8MJP56K"
+  measurementId: "G-Q0P8MJP56K",
 };
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
